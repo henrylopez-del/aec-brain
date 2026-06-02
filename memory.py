@@ -1,9 +1,14 @@
 """
-Memoria de conversacion persistida en Supabase (tabla public.aec_chat_memory).
+Memoria de conversacion en Supabase, usando la tabla EXISTENTE del flujo de
+pruebas: public.n8n_chat_histories_pruebas (formato n8n / LangChain).
+
+Esquema: session_id (varchar) + message (jsonb). El jsonb es el mensaje
+serializado de LangChain: {"type":"human"|"ai","content":"..."}.
+Usar esta tabla = la memoria queda compartida con el flujo n8n; no duplicamos.
 
 Hecha con stdlib (urllib) a proposito: NO agrega dependencias al build.
-Lee/escribe via PostgREST con la service role key. Falla silenciosa: si Supabase
-no esta configurado o falla, el bot sigue respondiendo, solo sin memoria.
+Falla silenciosa: si Supabase no esta seteado o falla, el bot sigue
+respondiendo, solo sin memoria.
 """
 import os
 import json
@@ -12,8 +17,8 @@ import urllib.parse
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-TABLE = "aec_chat_memory"
-HISTORY_LIMIT = 12  # ultimos N mensajes que se le dan de contexto al modelo
+TABLE = os.getenv("MEMORY_TABLE", "n8n_chat_histories_pruebas")
+HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "12"))  # ultimos N mensajes de contexto
 
 
 def memory_enabled() -> bool:
@@ -28,23 +33,50 @@ def _headers() -> dict:
     }
 
 
-def fetch_history(conversation_id: str, limit: int = HISTORY_LIMIT) -> list:
-    """Devuelve [{role, content}, ...] en orden cronologico."""
+def fetch_history(conversation_id: str, limit: int = None) -> list:
+    """Devuelve [{role, content}, ...] en orden cronologico (role: user|assistant)."""
     if not memory_enabled() or not conversation_id:
         return []
+    limit = limit or HISTORY_LIMIT
     q = urllib.parse.urlencode({
-        "conversation_id": f"eq.{conversation_id}",
-        "select": "role,content",
-        "order": "created_at.desc",
+        "session_id": f"eq.{conversation_id}",
+        "select": "message",
+        "order": "id.desc",
         "limit": str(limit),
     })
     req = urllib.request.Request(f"{SUPABASE_URL}/rest/v1/{TABLE}?{q}", headers=_headers())
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
             rows = json.load(r)
-        return list(reversed(rows))
     except Exception:
         return []
+    out = []
+    for row in reversed(rows):  # id.desc -> reverse a cronologico
+        m = row.get("message") or {}
+        t = m.get("type")
+        c = m.get("content", "")
+        if t in ("human", "ai") and c:
+            out.append({"role": "user" if t == "human" else "assistant", "content": c})
+    return out
+
+
+def _msg_json(role: str, content: str) -> dict:
+    """Construye el jsonb en el formato LangChain que ya usa la tabla."""
+    if role == "user":
+        return {
+            "type": "human",
+            "content": content,
+            "additional_kwargs": {},
+            "response_metadata": {},
+        }
+    return {
+        "type": "ai",
+        "content": content,
+        "tool_calls": [],
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "invalid_tool_calls": [],
+    }
 
 
 def append_messages(conversation_id: str, pairs: list) -> None:
@@ -52,7 +84,7 @@ def append_messages(conversation_id: str, pairs: list) -> None:
     if not memory_enabled() or not conversation_id:
         return
     payload = [
-        {"conversation_id": conversation_id, "role": role, "content": content}
+        {"session_id": conversation_id, "message": _msg_json(role, content)}
         for role, content in pairs
     ]
     data = json.dumps(payload).encode()
