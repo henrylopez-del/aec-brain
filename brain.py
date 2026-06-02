@@ -20,15 +20,26 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from memory import fetch_history, append_messages
+from config import load_prompt
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
-# El prompt vive en env var, NO en codigo. Asi Vic/Henry lo cambian sin deploy.
+# Fallback si no hay prompt en Supabase ni env var.
 DEFAULT_PROMPT = (
     "Eres un asistente de atencion al cliente por WhatsApp. "
     "Responde claro, breve y en espanol. Si no tienes un dato, dilo, no lo inventes."
 )
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+
+# Prioridad del prompt: 1) Supabase tenant_prompts (como n8n) 2) env SYSTEM_PROMPT
+# 3) generico. Se cachea al primer uso; reiniciar el servicio lo refresca.
+_SYSTEM_PROMPT_CACHE = None
+
+
+def _system_prompt() -> str:
+    global _SYSTEM_PROMPT_CACHE
+    if _SYSTEM_PROMPT_CACHE is None:
+        _SYSTEM_PROMPT_CACHE = load_prompt() or os.getenv("SYSTEM_PROMPT", DEFAULT_PROMPT)
+    return _SYSTEM_PROMPT_CACHE
 
 
 class State(TypedDict):
@@ -63,7 +74,7 @@ def respond_node(state: State) -> dict:
     user_msg = state["user_message"]
 
     # Memoria: arma el contexto con el historial previo de esta conversacion.
-    messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    messages = [SystemMessage(content=_system_prompt())]
     for m in fetch_history(conv):
         if m.get("role") == "user":
             messages.append(HumanMessage(content=m.get("content", "")))
