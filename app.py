@@ -36,5 +36,15 @@ async def respond(req: Request):
         or ""
     )
 
-    reply = run_brain(msg, conv)
-    return {"reply": reply, "conversationId": conv}
+    out = run_brain(msg, conv)
+    a = out.get("analysis") or {}
+    # JSON rico: el texto + la DECISION (tags + escalacion). n8n/GHL ejecuta (Fase B).
+    return {
+        "reply": out["reply"],
+        "conversationId": conv,
+        "classification": a.get("classification", "vacio"),
+        "subtype": a.get("subtype"),
+        "escalate": a.get("escalate", False),
+        "tags": a.get("tags", []),
+        "note": a.get("note", ""),
+    }

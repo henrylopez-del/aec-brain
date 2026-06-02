@@ -21,6 +21,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from memory import fetch_history, append_messages
 from config import load_prompt
+from analyzer import analyze
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
@@ -46,6 +47,7 @@ class State(TypedDict):
     user_message: str
     conversation_id: str
     reply: str
+    analysis: dict
 
 
 _llm = None  # lazy singleton
@@ -90,22 +92,39 @@ def respond_node(state: State) -> dict:
     return {"reply": reply}
 
 
+def analyze_node(state: State) -> dict:
+    # Re-lee el historial (ya incluye el turno recien persistido) y clasifica.
+    conv = state.get("conversation_id", "")
+    history = fetch_history(conv)
+    result = analyze(history, state["user_message"], state.get("reply", ""))
+    return {"analysis": result}
+
+
 _graph = StateGraph(State)
 _graph.add_node("respond", respond_node)
+_graph.add_node("analyze", analyze_node)
 _graph.set_entry_point("respond")
-_graph.add_edge("respond", END)
+_graph.add_edge("respond", "analyze")
+_graph.add_edge("analyze", END)
 brain = _graph.compile()
 
 
-def run_brain(user_message: str, conversation_id: str = "") -> str:
+def _empty_analysis() -> dict:
+    return {"classification": "vacio", "subtype": None, "note": "",
+            "escalate": False, "tags": [], "raw": ""}
+
+
+def run_brain(user_message: str, conversation_id: str = "") -> dict:
     if not user_message:
-        return "No recibi ningun mensaje."
+        return {"reply": "No recibi ningun mensaje.", "analysis": _empty_analysis()}
     try:
         result = brain.invoke(
-            {"user_message": user_message, "conversation_id": conversation_id, "reply": ""}
+            {"user_message": user_message, "conversation_id": conversation_id,
+             "reply": "", "analysis": {}}
         )
-        return result["reply"]
+        return {"reply": result["reply"],
+                "analysis": result.get("analysis") or _empty_analysis()}
     except RuntimeError as e:
-        return f"[config] {e}"
+        return {"reply": f"[config] {e}", "analysis": _empty_analysis()}
     except Exception as e:
-        return f"[error] {type(e).__name__}: {e}"
+        return {"reply": f"[error] {type(e).__name__}: {e}", "analysis": _empty_analysis()}

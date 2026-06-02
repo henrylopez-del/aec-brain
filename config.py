@@ -24,13 +24,14 @@ PROMPT_KEY = os.getenv("PROMPT_KEY", "system_prompt")
 PROMPTS_TABLE = os.getenv("PROMPTS_TABLE", "tenant_prompts")
 
 
-def load_prompt() -> str | None:
+def load_prompt_kv(agent_key: str, prompt_key: str) -> str | None:
+    """Lee cualquier prompt de tenant_prompts por agent_key + prompt_key."""
     if not (SUPABASE_URL and SUPABASE_KEY and LOCATION_ID):
         return None
     q = urllib.parse.urlencode({
         "location_id": f"eq.{LOCATION_ID}",
-        "agent_key": f"eq.{AGENT_KEY}",
-        "prompt_key": f"eq.{PROMPT_KEY}",
+        "agent_key": f"eq.{agent_key}",
+        "prompt_key": f"eq.{prompt_key}",
         "select": "content",
         "limit": "1",
     })
@@ -47,3 +48,8 @@ def load_prompt() -> str | None:
     except Exception:
         pass
     return None
+
+
+def load_prompt() -> str | None:
+    """El system prompt del agente activo (AGENT_KEY)."""
+    return load_prompt_kv(AGENT_KEY, PROMPT_KEY)
