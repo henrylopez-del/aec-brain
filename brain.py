@@ -17,7 +17,9 @@ from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+from memory import fetch_history, append_messages
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
@@ -57,12 +59,24 @@ def _get_llm():
 
 def respond_node(state: State) -> dict:
     llm = _get_llm()
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=state["user_message"]),
-    ]
+    conv = state.get("conversation_id", "")
+    user_msg = state["user_message"]
+
+    # Memoria: arma el contexto con el historial previo de esta conversacion.
+    messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    for m in fetch_history(conv):
+        if m.get("role") == "user":
+            messages.append(HumanMessage(content=m.get("content", "")))
+        else:
+            messages.append(AIMessage(content=m.get("content", "")))
+    messages.append(HumanMessage(content=user_msg))
+
     out = llm.invoke(messages)
-    return {"reply": out.content}
+    reply = out.content
+
+    # Persiste el turno para que el proximo mensaje lo recuerde.
+    append_messages(conv, [("user", user_msg), ("assistant", reply)])
+    return {"reply": reply}
 
 
 _graph = StateGraph(State)
