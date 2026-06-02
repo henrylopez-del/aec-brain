@@ -7,6 +7,10 @@ Sin escalacion, sin follow-up, sin guard TVS (eso es produccion).
 El grafo arranca con un solo nodo (responder). Esta hecho asi a proposito
 para que crezca: cuando se sume routing, sub-agentes o guard, se agregan
 nodos sin reescribir nada.
+
+El LLM se construye perezoso (en el primer uso), NO al importar, para que el
+servicio arranque aunque falte la GEMINI_API_KEY. Asi /health vive siempre y
+/respond avisa claro si falta la key, en vez de tumbar el deploy.
 """
 import os
 from typing import TypedDict
@@ -18,7 +22,6 @@ from langchain_core.messages import SystemMessage, HumanMessage
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # El prompt vive en env var, NO en codigo. Asi Vic/Henry lo cambian sin deploy.
-# Default generico solo para validar que el tubo responde algo coherente.
 DEFAULT_PROMPT = (
     "Eres un asistente de atencion al cliente por WhatsApp. "
     "Responde claro, breve y en espanol. Si no tienes un dato, dilo, no lo inventes."
@@ -32,15 +35,33 @@ class State(TypedDict):
     reply: str
 
 
-_llm = ChatGoogleGenerativeAI(model=MODEL, temperature=0, max_output_tokens=600)
+_llm = None  # lazy singleton
+
+
+def _get_llm():
+    global _llm
+    if _llm is None:
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key or api_key == "PENDIENTE":
+            raise RuntimeError("Falta GEMINI_API_KEY (setearla en Render).")
+        # Pasamos la key explicita: la libreria por default busca GOOGLE_API_KEY
+        # o credenciales de Google Cloud, no nuestra GEMINI_API_KEY.
+        _llm = ChatGoogleGenerativeAI(
+            model=MODEL,
+            temperature=0,
+            max_output_tokens=600,
+            google_api_key=api_key,
+        )
+    return _llm
 
 
 def respond_node(state: State) -> dict:
+    llm = _get_llm()
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=state["user_message"]),
     ]
-    out = _llm.invoke(messages)
+    out = llm.invoke(messages)
     return {"reply": out.content}
 
 
@@ -54,7 +75,12 @@ brain = _graph.compile()
 def run_brain(user_message: str, conversation_id: str = "") -> str:
     if not user_message:
         return "No recibi ningun mensaje."
-    result = brain.invoke(
-        {"user_message": user_message, "conversation_id": conversation_id, "reply": ""}
-    )
-    return result["reply"]
+    try:
+        result = brain.invoke(
+            {"user_message": user_message, "conversation_id": conversation_id, "reply": ""}
+        )
+        return result["reply"]
+    except RuntimeError as e:
+        return f"[config] {e}"
+    except Exception as e:
+        return f"[error] {type(e).__name__}: {e}"
