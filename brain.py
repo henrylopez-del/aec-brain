@@ -20,10 +20,23 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from memory import fetch_history, append_messages
-from config import load_prompt
+from config import load_prompt, load_stage_prompt, load_company_context
 from analyzer import analyze
+import pipeline
+import pipeline_state
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+
+# Locations que usan el PIPELINE DE VENTAS estructurado (por etapas).
+# El resto (TVS) sigue con el prompt unico de siempre. Coma-separado.
+PIPELINE_LOCATIONS = set(
+    x.strip() for x in os.getenv("PIPELINE_LOCATIONS", "").split(",") if x.strip()
+)
+
+
+def _location_of(conversation_id: str) -> str:
+    """conversationId = 'location:contact' -> location."""
+    return conversation_id.split(":", 1)[0] if ":" in conversation_id else ""
 
 # Fallback si no hay prompt en Supabase ni env var.
 DEFAULT_PROMPT = (
@@ -48,6 +61,8 @@ class State(TypedDict):
     conversation_id: str
     reply: str
     analysis: dict
+    stage: str
+    next_stage: str
 
 
 _llm = None  # lazy singleton
@@ -70,14 +85,36 @@ def _get_llm():
     return _llm
 
 
+def _system_for(conv: str, location: str):
+    """Devuelve (system_text, stage). En modo pipeline: company_context + prompt de
+    la etapa actual. Si no, el prompt unico de siempre (TVS)."""
+    if location in PIPELINE_LOCATIONS:
+        stage = pipeline_state.get_stage(conv)
+        company = load_company_context(location) or ""
+        stage_p = load_stage_prompt(location, stage) or ""
+        objetivo = pipeline.stage_goal(stage)
+        sys = (
+            (company + "\n\n" if company else "")
+            + f"# ETAPA ACTUAL DEL PIPELINE: {stage}\n"
+            + (f"Objetivo de esta etapa: {objetivo}\n\n" if objetivo else "\n")
+            + (stage_p or _system_prompt())
+        )
+        return sys, stage
+    return _system_prompt(), None
+
+
 def respond_node(state: State) -> dict:
     llm = _get_llm()
     conv = state.get("conversation_id", "")
     user_msg = state["user_message"]
+    location = _location_of(conv)
+
+    system_text, stage = _system_for(conv, location)
 
     # Memoria: arma el contexto con el historial previo de esta conversacion.
-    messages = [SystemMessage(content=_system_prompt())]
-    for m in fetch_history(conv):
+    history = fetch_history(conv)
+    messages = [SystemMessage(content=system_text)]
+    for m in history:
         if m.get("role") == "user":
             messages.append(HumanMessage(content=m.get("content", "")))
         else:
@@ -89,7 +126,15 @@ def respond_node(state: State) -> dict:
 
     # Persiste el turno para que el proximo mensaje lo recuerde.
     append_messages(conv, [("user", user_msg), ("assistant", reply)])
-    return {"reply": reply}
+
+    # GATE del pipeline: solo en modo pipeline, decide si avanza de etapa.
+    new_stage = stage
+    if stage is not None:
+        if pipeline.decide_advance(llm, history, user_msg, reply, stage):
+            new_stage = pipeline.next_stage(stage)
+        pipeline_state.set_stage(conv, new_stage)
+
+    return {"reply": reply, "stage": stage, "next_stage": new_stage}
 
 
 def analyze_node(state: State) -> dict:
@@ -120,10 +165,12 @@ def run_brain(user_message: str, conversation_id: str = "") -> dict:
     try:
         result = brain.invoke(
             {"user_message": user_message, "conversation_id": conversation_id,
-             "reply": "", "analysis": {}}
+             "reply": "", "analysis": {}, "stage": "", "next_stage": ""}
         )
         return {"reply": result["reply"],
-                "analysis": result.get("analysis") or _empty_analysis()}
+                "analysis": result.get("analysis") or _empty_analysis(),
+                "stage": result.get("stage"),
+                "next_stage": result.get("next_stage")}
     except RuntimeError as e:
         return {"reply": f"[config] {e}", "analysis": _empty_analysis()}
     except Exception as e:

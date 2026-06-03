@@ -24,12 +24,16 @@ PROMPT_KEY = os.getenv("PROMPT_KEY", "system_prompt")
 PROMPTS_TABLE = os.getenv("PROMPTS_TABLE", "tenant_prompts")
 
 
-def load_prompt_kv(agent_key: str, prompt_key: str) -> str | None:
-    """Lee cualquier prompt de tenant_prompts por agent_key + prompt_key."""
-    if not (SUPABASE_URL and SUPABASE_KEY and LOCATION_ID):
+def load_prompt_kv(agent_key: str, prompt_key: str, location_id: str = None) -> str | None:
+    """Lee cualquier prompt de tenant_prompts por (location, agent_key, prompt_key).
+
+    location_id por parametro = multi-tenant (varias empresas en el mismo brain).
+    Si no se pasa, cae al env LOCATION_ID (comportamiento original, TVS)."""
+    loc = location_id or LOCATION_ID
+    if not (SUPABASE_URL and SUPABASE_KEY and loc):
         return None
     q = urllib.parse.urlencode({
-        "location_id": f"eq.{LOCATION_ID}",
+        "location_id": f"eq.{loc}",
         "agent_key": f"eq.{agent_key}",
         "prompt_key": f"eq.{prompt_key}",
         "select": "content",
@@ -53,3 +57,13 @@ def load_prompt_kv(agent_key: str, prompt_key: str) -> str | None:
 def load_prompt() -> str | None:
     """El system prompt del agente activo (AGENT_KEY)."""
     return load_prompt_kv(AGENT_KEY, PROMPT_KEY)
+
+
+def load_stage_prompt(location_id: str, stage: str) -> str | None:
+    """Prompt de una etapa del pipeline (agent_key='pipeline', prompt_key='stage_<x>')."""
+    return load_prompt_kv("pipeline", f"stage_{stage}", location_id=location_id)
+
+
+def load_company_context(location_id: str) -> str | None:
+    """Capa 1: contexto de empresa (siempre presente). Comun a todas las etapas."""
+    return load_prompt_kv("default", "company_context", location_id=location_id)
