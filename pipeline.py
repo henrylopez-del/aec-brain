@@ -13,6 +13,19 @@ Etapas (mapeadas al pipeline GHL "Ventas"):
 """
 from langchain_core.messages import SystemMessage, HumanMessage
 
+
+def _txt(content) -> str:
+    """Normaliza content (string o lista de partes Gemini) a string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            (p.get("text") or p.get("content") or "") if isinstance(p, dict) else str(p)
+            for p in content
+        )
+    return str(content or "")
+
+
 STAGES = ["apertura", "calificacion", "educacion", "demo", "cierre"]
 
 # Objetivo de cada etapa + criterio (gate) para avanzar.
@@ -71,7 +84,7 @@ def decide_advance(llm, history: list, user_message: str, reply: str, current_st
     if not crit:
         return False
     convo = "\n".join(
-        ("Cliente: " if m.get("role") == "user" else "Bot: ") + m.get("content", "")
+        ("Cliente: " if m.get("role") == "user" else "Bot: ") + _txt(m.get("content", ""))
         for m in history[-6:]
     )
     sys = (
@@ -89,6 +102,6 @@ def decide_advance(llm, history: list, user_message: str, reply: str, current_st
     )
     try:
         out = llm.invoke([SystemMessage(content=sys), HumanMessage(content=human)])
-        return "AVANZAR" in (out.content or "").upper()
+        return "AVANZAR" in _txt(out.content).upper()
     except Exception:
         return False

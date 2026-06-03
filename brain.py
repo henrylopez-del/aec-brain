@@ -38,6 +38,22 @@ def _location_of(conversation_id: str) -> str:
     """conversationId = 'location:contact' -> location."""
     return conversation_id.split(":", 1)[0] if ":" in conversation_id else ""
 
+
+def as_text(content) -> str:
+    """Gemini puede devolver .content como string o como lista de partes
+    ([{'type':'text','text':...}, ...]). Normaliza a string plano."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for p in content:
+            if isinstance(p, dict):
+                out.append(p.get("text") or p.get("content") or "")
+            else:
+                out.append(str(p))
+        return "".join(out).strip()
+    return str(content or "")
+
 # Fallback si no hay prompt en Supabase ni env var.
 DEFAULT_PROMPT = (
     "Eres un asistente de atencion al cliente por WhatsApp. "
@@ -122,7 +138,7 @@ def respond_node(state: State) -> dict:
     messages.append(HumanMessage(content=user_msg))
 
     out = llm.invoke(messages)
-    reply = out.content
+    reply = as_text(out.content)
 
     # Persiste el turno para que el proximo mensaje lo recuerde.
     append_messages(conv, [("user", user_msg), ("assistant", reply)])
