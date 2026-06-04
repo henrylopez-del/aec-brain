@@ -47,4 +47,7 @@ async def respond(req: Request):
         "escalate": a.get("escalate", False),
         "tags": a.get("tags", []),
         "note": a.get("note", ""),
+        # Pipeline (None si el tenant no usa pipeline): etapa de entrada + a la que avanza
+        "stage": out.get("stage"),
+        "next_stage": out.get("next_stage"),
     }
